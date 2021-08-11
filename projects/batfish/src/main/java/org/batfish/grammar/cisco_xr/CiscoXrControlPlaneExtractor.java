@@ -128,8 +128,6 @@ import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_ARE
 import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_DEFAULT_INFORMATION_ROUTE_POLICY;
 import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_DISTRIBUTE_LIST_ACCESS_LIST_IN;
 import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_DISTRIBUTE_LIST_ACCESS_LIST_OUT;
-import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_DISTRIBUTE_LIST_PREFIX_LIST_IN;
-import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_DISTRIBUTE_LIST_PREFIX_LIST_OUT;
 import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_DISTRIBUTE_LIST_ROUTE_POLICY_IN;
 import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.OSPF_REDISTRIBUTE_ROUTE_POLICY;
 import static org.batfish.representation.cisco_xr.CiscoXrStructureUsage.POLICY_MAP_EVENT_CLASS;
@@ -758,8 +756,6 @@ import org.batfish.grammar.cisco_xr.CiscoXrParser.Roc_networkContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Roc_passiveContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Rodl_acl_inContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Rodl_acl_outContext;
-import org.batfish.grammar.cisco_xr.CiscoXrParser.Rodl_prefix_list_inContext;
-import org.batfish.grammar.cisco_xr.CiscoXrParser.Rodl_prefix_list_outContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Rodl_route_policyContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Ror_routing_instanceContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Ror_routing_instance_nullContext;
@@ -970,6 +966,7 @@ import org.batfish.representation.cisco_xr.NetworkObjectGroup;
 import org.batfish.representation.cisco_xr.NssaSettings;
 import org.batfish.representation.cisco_xr.OriginatesFromAsPathSetElem;
 import org.batfish.representation.cisco_xr.OspfArea;
+import org.batfish.representation.cisco_xr.OspfDefaultInformationOriginate;
 import org.batfish.representation.cisco_xr.OspfInterfaceSettings;
 import org.batfish.representation.cisco_xr.OspfNetworkType;
 import org.batfish.representation.cisco_xr.OspfProcess;
@@ -5979,30 +5976,26 @@ public class CiscoXrControlPlaneExtractor extends CiscoXrParserBaseListener
       _configuration.referenceStructure(
           ROUTE_POLICY, name, OSPF_DEFAULT_INFORMATION_ROUTE_POLICY, ctx.start.getLine());
     }
-    OspfProcess proc = _currentOspfProcess;
-    proc.setDefaultInformationOriginate(true);
+    OspfDefaultInformationOriginate defaultInformationOriginate =
+        new OspfDefaultInformationOriginate();
     boolean always = ctx.ALWAYS().size() > 0;
-    proc.setDefaultInformationOriginateAlways(always);
+    defaultInformationOriginate.setAlways(always);
     if (ctx.metric != null) {
       int metric = toInteger(ctx.metric);
-      proc.setDefaultInformationMetric(metric);
+      defaultInformationOriginate.setMetric(metric);
     }
     if (ctx.metric_type != null) {
       int metricTypeInt = toInteger(ctx.metric_type);
       OspfMetricType metricType = OspfMetricType.fromInteger(metricTypeInt);
-      proc.setDefaultInformationMetricType(metricType);
+      defaultInformationOriginate.setMetricType(metricType);
     }
+    _currentOspfProcess.setDefaultInformationOriginate(defaultInformationOriginate);
   }
 
   @Override
   public void exitRo_default_metric(Ro_default_metricContext ctx) {
-    OspfProcess proc = _currentOspfProcess;
-    if (ctx.NO() != null) {
-      proc.setDefaultMetric(null);
-    } else {
-      long metric = toLong(ctx.metric);
-      proc.setDefaultMetric(metric);
-    }
+    long metric = toLong(ctx.metric);
+    _currentOspfProcess.setDefaultMetric(metric);
   }
 
   @Override
@@ -6020,25 +6013,6 @@ public class CiscoXrControlPlaneExtractor extends CiscoXrParserBaseListener
     DistributeList distributeList = new DistributeList(name, DistributeListFilterType.ACCESS_LIST);
     _configuration.referenceStructure(
         IP_ACCESS_LIST, name, OSPF_DISTRIBUTE_LIST_ACCESS_LIST_OUT, ctx.acl.getStart().getLine());
-    _currentOspfProcess.setDistributeListOut(distributeList);
-    todo(ctx);
-  }
-
-  @Override
-  public void exitRodl_prefix_list_in(Rodl_prefix_list_inContext ctx) {
-    String name = toString(ctx.pl);
-    DistributeList distributeList = new DistributeList(name, DistributeListFilterType.PREFIX_LIST);
-    _configuration.referenceStructure(
-        IP_ACCESS_LIST, name, OSPF_DISTRIBUTE_LIST_PREFIX_LIST_IN, ctx.pl.getStart().getLine());
-    _currentOspfSettings.setDistributeListIn(distributeList);
-  }
-
-  @Override
-  public void exitRodl_prefix_list_out(Rodl_prefix_list_outContext ctx) {
-    String name = toString(ctx.pl);
-    DistributeList distributeList = new DistributeList(name, DistributeListFilterType.PREFIX_LIST);
-    _configuration.referenceStructure(
-        IP_ACCESS_LIST, name, OSPF_DISTRIBUTE_LIST_PREFIX_LIST_OUT, ctx.pl.getStart().getLine());
     _currentOspfProcess.setDistributeListOut(distributeList);
     todo(ctx);
   }
@@ -6065,6 +6039,16 @@ public class CiscoXrControlPlaneExtractor extends CiscoXrParserBaseListener
   @Override
   public void exitRoc_network(Roc_networkContext ctx) {
     _currentOspfSettings.setNetworkType(toOspfNetworkType(ctx.ospf_network_type()));
+  }
+
+  @Override
+  public void exitRo_no(CiscoXrParser.Ro_noContext ctx) {
+    OspfProcess proc = _currentOspfProcess;
+    if (ctx.DEFAULT_INFORMATION() != null) {
+      proc.setDefaultInformationOriginate(null);
+    } else if (ctx.DEFAULT_METRIC() != null) {
+      proc.setDefaultMetric(null);
+    }
   }
 
   @Override
