@@ -92,6 +92,12 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
     _c.setDefaultCrossZoneAction(LineAction.DENY);
     _c.setDefaultInboundAction(LineAction.PERMIT);
 
+    Optional<CheckpointManagementConfiguration> mgmtConfig =
+        Optional.ofNullable(getConversionContext())
+            .map(ConversionContext::getCheckpointManagementConfiguration)
+            .map(cmc -> (CheckpointManagementConfiguration) cmc);
+    mgmtConfig.ifPresent(this::convertManagementConfig);
+
     // Gateways don't have VRFs, so put everything in a generated default VRF
     Vrf vrf = new Vrf(VRF_NAME);
     _c.setVrfs(ImmutableMap.of(VRF_NAME, vrf));
@@ -103,12 +109,6 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
             _staticRoutes.values().stream()
                 .flatMap(staticRoute -> convertStaticRoute(staticRoute, _interfaces))
                 .collect(ImmutableSet.toImmutableSet()));
-
-    Optional<CheckpointManagementConfiguration> mgmtConfig =
-        Optional.ofNullable(getConversionContext())
-            .map(ConversionContext::getCheckpointManagementConfiguration)
-            .map(cmc -> (CheckpointManagementConfiguration) cmc);
-    mgmtConfig.ifPresent(this::convertManagementConfig);
 
     return ImmutableList.of(_c);
   }
@@ -143,10 +143,9 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
               //  names are unique
               if (natObj instanceof AddressRange) {
                 Optional.ofNullable(toIpSpace((AddressRange) natObj))
-                    .ifPresent(
-                        ipSpace -> _c.getIpSpaces().put(natObj.getUid().getValue(), ipSpace));
+                    .ifPresent(ipSpace -> _c.getIpSpaces().put(natObj.getName(), ipSpace));
               } else if (natObj instanceof Network) {
-                _c.getIpSpaces().put(natObj.getUid().getValue(), toIpSpace((Network) natObj));
+                _c.getIpSpaces().put(natObj.getName(), toIpSpace((Network) natObj));
               }
             });
   }
@@ -173,9 +172,10 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
 
   private @Nonnull Optional<Map.Entry<ManagementDomain, GatewayOrServer>> findGatewayAndDomain(
       CheckpointManagementConfiguration mgmtConfig) {
+    // TODO handle linking to secondary IP addresses, if that is allowed
     Set<Ip> ips =
-        _c.getAllInterfaces().values().stream()
-            .flatMap(i -> i.getAllAddresses().stream())
+        _interfaces.values().stream()
+            .map(Interface::getAddress)
             .filter(ConcreteInterfaceAddress.class::isInstance)
             .map(ConcreteInterfaceAddress.class::cast)
             .map(ConcreteInterfaceAddress::getIp)
