@@ -1,7 +1,7 @@
 package org.batfish.vendor.check_point_gateway.representation;
 
 import static org.apache.commons.lang3.ObjectUtils.firstNonNull;
-import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toIpSpace;
+import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toIpAccessLists;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -18,6 +18,7 @@ import java.util.stream.Stream;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.batfish.common.VendorConversionException;
+import org.batfish.datamodel.AclAclLine;
 import org.batfish.datamodel.ConcreteInterfaceAddress;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.ConfigurationFormat;
@@ -26,6 +27,8 @@ import org.batfish.datamodel.Interface.Dependency;
 import org.batfish.datamodel.Interface.DependencyType;
 import org.batfish.datamodel.InterfaceType;
 import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpAccessList;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.LineAction;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.Vrf;
@@ -36,18 +39,22 @@ import org.batfish.datamodel.route.nh.NextHopIp;
 import org.batfish.vendor.ConversionContext;
 import org.batfish.vendor.VendorConfiguration;
 import org.batfish.vendor.check_point_gateway.representation.BondingGroup.Mode;
-import org.batfish.vendor.check_point_management.AddressRange;
+import org.batfish.vendor.check_point_management.AccessLayer;
+import org.batfish.vendor.check_point_management.AddressSpace;
+import org.batfish.vendor.check_point_management.AddressSpaceToIpSpace;
 import org.batfish.vendor.check_point_management.CheckpointManagementConfiguration;
 import org.batfish.vendor.check_point_management.GatewayOrServer;
 import org.batfish.vendor.check_point_management.ManagementDomain;
 import org.batfish.vendor.check_point_management.ManagementPackage;
 import org.batfish.vendor.check_point_management.ManagementServer;
 import org.batfish.vendor.check_point_management.NatRulebase;
-import org.batfish.vendor.check_point_management.Network;
+import org.batfish.vendor.check_point_management.TypedManagementObject;
+import org.batfish.vendor.check_point_management.Uid;
 
 public class CheckPointGatewayConfiguration extends VendorConfiguration {
 
   public static final String VRF_NAME = "default";
+  public static final String INTERFACE_ACL_NAME = "~INTERFACE_ACL~";
 
   public CheckPointGatewayConfiguration() {
     _bondingGroups = new HashMap<>();
@@ -129,25 +136,64 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
       return;
     }
     ManagementPackage pakij = maybePackage.get();
-    // Convert IP spaces
-    @Nullable NatRulebase natRulebase = pakij.getNatRulebase();
-    if (natRulebase == null) {
-      return;
+
+    convertAddressSpaces(pakij);
+    convertAccessLayers(pakij.getAccessLayers());
+    Optional.ofNullable(pakij.getNatRulebase()).ifPresent(this::convertNatRulebase);
+  }
+
+  private void convertAccessLayers(List<AccessLayer> accessLayers) {
+    // TODO support matching multiple access layers
+    if (accessLayers.size() > 1) {
+      _w.redFlag(
+          "Batfish currently only supports matching on a single Access Layer, so only the first"
+              + " matching Access Rule will be applied.");
     }
-    natRulebase
-        .getObjectsDictionary()
-        .values()
+    for (AccessLayer al : accessLayers) {
+      Map<String, IpAccessList> acl = toIpAccessLists(al);
+      _c.getIpAccessLists().putAll(acl);
+    }
+    IpAccessList interfaceAcl =
+        IpAccessList.builder()
+            .setName(INTERFACE_ACL_NAME)
+            .setLines(
+                accessLayers.stream()
+                    .map(l -> new AclAclLine(l.getName(), l.getName()))
+                    .collect(ImmutableList.toImmutableList()))
+            .build();
+    _c.getIpAccessLists().put(interfaceAcl.getName(), interfaceAcl);
+  }
+
+  private void convertObjectsToIpSpaces(Map<Uid, TypedManagementObject> objs) {
+    AddressSpaceToIpSpace addressSpaceToIpSpace = new AddressSpaceToIpSpace(objs);
+    objs.values()
         .forEach(
-            natObj -> {
-              // TODO Add IpSpaceMetadata, or store IpSpaces by names instead of UIDs if we confirm
-              //  names are unique
-              if (natObj instanceof AddressRange) {
-                Optional.ofNullable(toIpSpace((AddressRange) natObj))
-                    .ifPresent(ipSpace -> _c.getIpSpaces().put(natObj.getName(), ipSpace));
-              } else if (natObj instanceof Network) {
-                _c.getIpSpaces().put(natObj.getName(), toIpSpace((Network) natObj));
+            obj -> {
+              if (obj instanceof AddressSpace) {
+                AddressSpace addressSpace = (AddressSpace) obj;
+                IpSpace ipSpace = addressSpace.accept(addressSpaceToIpSpace);
+                _c.getIpSpaces().put(obj.getName(), ipSpace);
               }
             });
+  }
+
+  /**
+   * Converts all objects that can be used as an
+   * {org.batfish.vendor.check_point_management.AddressSpace} in the given package to an {@link
+   * org.batfish.datamodel.IpSpace}
+   */
+  private void convertAddressSpaces(@Nullable ManagementPackage pakij) {
+    Optional.ofNullable(pakij.getNatRulebase())
+        .ifPresent(natRulebase -> convertObjectsToIpSpaces(natRulebase.getObjectsDictionary()));
+    pakij.getAccessLayers().stream()
+        .map(AccessLayer::getObjectsDictionary)
+        .forEach(objectsDictionary -> convertObjectsToIpSpaces(objectsDictionary));
+  }
+
+  /** Converts the given {@link NatRulebase} and applies it to this config. */
+  @SuppressWarnings("unused")
+  private void convertNatRulebase(NatRulebase natRulebase) {
+    // TODO
   }
 
   private @Nonnull Optional<ManagementPackage> findAccessPackage(
@@ -334,6 +380,9 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
                 newIface.setActive(false);
               }
             });
+
+    // TODO confirm AccessRule interaction with NAT
+    newIface.setOutgoingFilter(_c.getIpAccessLists().get(INTERFACE_ACL_NAME));
     return newIface.build();
   }
 
