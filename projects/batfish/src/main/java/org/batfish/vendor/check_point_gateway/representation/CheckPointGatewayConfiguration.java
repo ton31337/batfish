@@ -2,6 +2,8 @@ package org.batfish.vendor.check_point_gateway.representation;
 
 import static org.apache.commons.lang3.ObjectUtils.firstNonNull;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toIpAccessLists;
+import static org.batfish.vendor.check_point_gateway.representation.CheckpointNatConversions.getManualNatRules;
+import static org.batfish.vendor.check_point_gateway.representation.CheckpointNatConversions.manualHideRuleTransformation;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -10,19 +12,20 @@ import com.google.common.collect.Maps;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import org.batfish.common.VendorConversionException;
 import org.batfish.datamodel.AclAclLine;
 import org.batfish.datamodel.ConcreteInterfaceAddress;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.ConfigurationFormat;
 import org.batfish.datamodel.DeviceModel;
+import org.batfish.datamodel.Interface.Builder;
 import org.batfish.datamodel.Interface.Dependency;
 import org.batfish.datamodel.Interface.DependencyType;
 import org.batfish.datamodel.InterfaceType;
@@ -36,6 +39,7 @@ import org.batfish.datamodel.route.nh.NextHop;
 import org.batfish.datamodel.route.nh.NextHopDiscard;
 import org.batfish.datamodel.route.nh.NextHopInterface;
 import org.batfish.datamodel.route.nh.NextHopIp;
+import org.batfish.datamodel.transformation.Transformation;
 import org.batfish.vendor.ConversionContext;
 import org.batfish.vendor.VendorConfiguration;
 import org.batfish.vendor.check_point_gateway.representation.BondingGroup.Mode;
@@ -47,9 +51,11 @@ import org.batfish.vendor.check_point_management.GatewayOrServer;
 import org.batfish.vendor.check_point_management.ManagementDomain;
 import org.batfish.vendor.check_point_management.ManagementPackage;
 import org.batfish.vendor.check_point_management.ManagementServer;
+import org.batfish.vendor.check_point_management.NatMethod;
 import org.batfish.vendor.check_point_management.NatRulebase;
 import org.batfish.vendor.check_point_management.TypedManagementObject;
 import org.batfish.vendor.check_point_management.Uid;
+import org.batfish.vendor.check_point_management.UnknownTypedManagementObject;
 
 public class CheckPointGatewayConfiguration extends VendorConfiguration {
 
@@ -123,7 +129,7 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
   /** Converts management server settings applicable to this configuration */
   private void convertManagementConfig(CheckpointManagementConfiguration mgmtConfig) {
     // Find gateway
-    Optional<Map.Entry<ManagementDomain, GatewayOrServer>> maybeGatewayAndDomain =
+    Optional<Entry<ManagementDomain, GatewayOrServer>> maybeGatewayAndDomain =
         findGatewayAndDomain(mgmtConfig);
     if (!maybeGatewayAndDomain.isPresent()) {
       return;
@@ -135,11 +141,7 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
     if (!maybePackage.isPresent()) {
       return;
     }
-    ManagementPackage pakij = maybePackage.get();
-
-    convertAddressSpaces(pakij);
-    convertAccessLayers(pakij.getAccessLayers());
-    Optional.ofNullable(pakij.getNatRulebase()).ifPresent(this::convertNatRulebase);
+    convertPackage(maybePackage.get(), gateway);
   }
 
   private void convertAccessLayers(List<AccessLayer> accessLayers) {
@@ -164,11 +166,31 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
     _c.getIpAccessLists().put(interfaceAcl.getName(), interfaceAcl);
   }
 
-  private void convertObjectsToIpSpaces(Map<Uid, TypedManagementObject> objs) {
+  /**
+   * Convert specified objects to their VI model equivalent representation(s) if applicable, and add
+   * them to the VI configuration. E.g. convert {@link AddressSpace}s to {@link IpSpace}s.
+   *
+   * <p><b>Note: different objects (e.g. revisions) of the same name/type are not supported. Only
+   * the last-encountered object with a particular name (of the same type) will produce a VI model
+   * object.</b>
+   *
+   * <p>Warns about unknown object types.
+   */
+  private void convertObjects(Map<Uid, TypedManagementObject> objs) {
     AddressSpaceToIpSpace addressSpaceToIpSpace = new AddressSpaceToIpSpace(objs);
     objs.values()
         .forEach(
             obj -> {
+              if (obj instanceof UnknownTypedManagementObject) {
+                UnknownTypedManagementObject utmo = (UnknownTypedManagementObject) obj;
+                _w.redFlag(
+                    String.format(
+                        "Batfish does not handle converting objects of type %s. These objects will"
+                            + " be ignored.",
+                        utmo.getType()));
+                return;
+              }
+
               if (obj instanceof AddressSpace) {
                 AddressSpace addressSpace = (AddressSpace) obj;
                 IpSpace ipSpace = addressSpace.accept(addressSpaceToIpSpace);
@@ -178,22 +200,38 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
   }
 
   /**
-   * Converts all objects that can be used as an
-   * {org.batfish.vendor.check_point_management.AddressSpace} in the given package to an {@link
-   * org.batfish.datamodel.IpSpace}
+   * Convert constructs in the specified package to their VI model equivalent and add them to the VI
+   * configuration.
    */
-  private void convertAddressSpaces(@Nullable ManagementPackage pakij) {
+  private void convertPackage(ManagementPackage pakij, GatewayOrServer gateway) {
+    convertObjects(pakij);
+    convertAccessLayers(pakij.getAccessLayers());
+    Optional.ofNullable(pakij.getNatRulebase()).ifPresent(r -> convertNatRulebase(r, gateway));
+  }
+
+  private void convertObjects(ManagementPackage pakij) {
     Optional.ofNullable(pakij.getNatRulebase())
-        .ifPresent(natRulebase -> convertObjectsToIpSpaces(natRulebase.getObjectsDictionary()));
+        .ifPresent(natRulebase -> convertObjects(natRulebase.getObjectsDictionary()));
     pakij.getAccessLayers().stream()
         .map(AccessLayer::getObjectsDictionary)
-        .forEach(objectsDictionary -> convertObjectsToIpSpaces(objectsDictionary));
+        .forEach(this::convertObjects);
   }
 
   /** Converts the given {@link NatRulebase} and applies it to this config. */
   @SuppressWarnings("unused")
-  private void convertNatRulebase(NatRulebase natRulebase) {
-    // TODO
+  private void convertNatRulebase(NatRulebase natRulebase, GatewayOrServer gateway) {
+    List<Transformation> manualHideRuleTransformations =
+        getManualNatRules(natRulebase, gateway)
+            .filter(rule -> rule.getMethod() == NatMethod.HIDE)
+            .map(natRule -> manualHideRuleTransformation(natRulebase, natRule, getWarnings()))
+            .filter(Optional::isPresent)
+            .map(Optional::get)
+            .collect(ImmutableList.toImmutableList());
+    if (getManualNatRules(natRulebase, gateway)
+        .anyMatch(rule -> rule.getMethod() != NatMethod.HIDE)) {
+      _w.redFlag("Non-HIDE NAT rules are unsupported");
+    }
+    // TODO Apply transformations to appropriate interfaces
   }
 
   private @Nonnull Optional<ManagementPackage> findAccessPackage(
@@ -216,7 +254,7 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
     return maybePackage;
   }
 
-  private @Nonnull Optional<Map.Entry<ManagementDomain, GatewayOrServer>> findGatewayAndDomain(
+  private @Nonnull Optional<Entry<ManagementDomain, GatewayOrServer>> findGatewayAndDomain(
       CheckpointManagementConfiguration mgmtConfig) {
     // TODO handle linking to secondary IP addresses, if that is allowed
     Set<Ip> ips =
@@ -315,7 +353,7 @@ public class CheckPointGatewayConfiguration extends VendorConfiguration {
 
   org.batfish.datamodel.Interface toInterface(Interface iface, Vrf vrf) {
     String ifaceName = iface.getName();
-    org.batfish.datamodel.Interface.Builder newIface =
+    Builder newIface =
         org.batfish.datamodel.Interface.builder()
             .setName(ifaceName)
             .setOwner(_c)
