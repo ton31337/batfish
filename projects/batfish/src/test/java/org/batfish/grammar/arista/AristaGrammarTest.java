@@ -1099,8 +1099,7 @@ public class AristaGrammarTest {
             .get(hostname)
             .getDefaultVrf()
             .getBgpProcess()
-            // TODO: change to local bgp cost once supported
-            .getAdminCost(RoutingProtocol.IBGP);
+            .getLocalAdminCost();
     Set<Bgpv4Route> bgpRibRoutes = dp.getBgpRoutes().get(hostname, Configuration.DEFAULT_VRF_NAME);
     Ip routerId = Ip.parse("1.1.1.1");
     Prefix staticPrefix1 = Prefix.parse("1.1.1.0/24");
@@ -1140,6 +1139,7 @@ public class AristaGrammarTest {
             .setProtocol(RoutingProtocol.AGGREGATE)
             .setReceivedFromIp(Ip.ZERO) // indicates local origination
             .setSrcProtocol(RoutingProtocol.AGGREGATE)
+            .setWeight(DEFAULT_LOCAL_BGP_WEIGHT)
             .build();
     Bgpv4Route aggRoute2 = aggRoute1.toBuilder().setNetwork(aggPrefix2).build();
     Bgpv4Route aggRoute4General = aggRoute1.toBuilder().setNetwork(aggPrefix4General).build();
@@ -1212,6 +1212,7 @@ public class AristaGrammarTest {
               .setProtocol(RoutingProtocol.AGGREGATE)
               .setReceivedFromIp(Ip.ZERO) // indicates local origination
               .setSrcProtocol(RoutingProtocol.AGGREGATE)
+              .setWeight(DEFAULT_LOCAL_BGP_WEIGHT)
               .build();
       Bgpv4Route aggRoute2 = aggRoute1.toBuilder().setNetwork(aggPrefix2).build();
       assertThat(
