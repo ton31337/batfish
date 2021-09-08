@@ -37,7 +37,6 @@ import static org.batfish.vendor.check_point_gateway.representation.Interface.DE
 import static org.batfish.vendor.check_point_gateway.representation.Interface.DEFAULT_LOOPBACK_MTU;
 import static org.batfish.vendor.check_point_management.NatMethod.HIDE;
 import static org.hamcrest.Matchers.allOf;
-import static org.hamcrest.Matchers.anEmptyMap;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
@@ -45,6 +44,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.emptyIterable;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertFalse;
@@ -67,7 +67,9 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.apache.commons.lang3.SerializationUtils;
 import org.batfish.common.BatfishLogger;
 import org.batfish.common.Warnings;
+import org.batfish.common.matchers.ParseWarningMatchers;
 import org.batfish.common.plugin.IBatfish;
+import org.batfish.common.runtime.SnapshotRuntimeData;
 import org.batfish.config.Settings;
 import org.batfish.datamodel.ConcreteInterfaceAddress;
 import org.batfish.datamodel.Configuration;
@@ -149,9 +151,10 @@ public class CheckPointGatewayGrammarTest {
     Settings settings = new Settings();
     configureBatfishTestSettings(settings);
     CheckPointGatewayCombinedParser parser = new CheckPointGatewayCombinedParser(src, settings);
+    Warnings parseWarnings = new Warnings();
     CheckPointGatewayControlPlaneExtractor extractor =
         new CheckPointGatewayControlPlaneExtractor(
-            src, parser, new Warnings(), new SilentSyntaxCollection());
+            src, parser, parseWarnings, new SilentSyntaxCollection());
     ParserRuleContext tree =
         Batfish.parse(parser, new BatfishLogger(BatfishLogger.LEVELSTR_FATAL, false), settings);
     extractor.processParseTree(TEST_SNAPSHOT, tree);
@@ -159,7 +162,11 @@ public class CheckPointGatewayGrammarTest {
         (CheckPointGatewayConfiguration) extractor.getVendorConfiguration();
     vendorConfiguration.setFilename(TESTCONFIGS_PREFIX + hostname);
     // crash if not serializable
-    return SerializationUtils.clone(vendorConfiguration);
+    CheckPointGatewayConfiguration vc = SerializationUtils.clone(vendorConfiguration);
+    vc.setAnswerElement(new ConvertConfigurationAnswerElement());
+    vc.setRuntimeData(SnapshotRuntimeData.EMPTY_SNAPSHOT_RUNTIME_DATA);
+    vc.setWarnings(parseWarnings);
+    return vc;
   }
 
   private @Nonnull Batfish getBatfishForConfigurationNames(String... configurationNames)
@@ -476,6 +483,32 @@ public class CheckPointGatewayGrammarTest {
       assertNull(nexthop2.getPriority());
       assertThat(nexthop2.getNexthopTarget(), equalTo(addrTarget2));
     }
+  }
+
+  @Test
+  public void testStaticRouteOffExtraction() {
+    String hostname = "static_route_off";
+    CheckPointGatewayConfiguration c = parseVendorConfig(hostname);
+
+    Prefix prefix = Prefix.parse("10.1.0.0/16");
+    NexthopTarget target = new NexthopAddress(Ip.parse("10.1.0.2"));
+
+    // Removed static route shouldn't show up, and removing the only nexthop should remove the route
+    assertThat(c.getStaticRoutes(), hasKeys(prefix));
+
+    // Removed nexthop shouldn't show up
+    StaticRoute route = c.getStaticRoutes().get(prefix);
+    assertThat(route.getNexthops(), hasKeys(target));
+
+    assertThat(
+        c.getWarnings().getParseWarnings(),
+        containsInAnyOrder(
+            allOf(
+                hasComment("Cannot remove non-existent static route"),
+                ParseWarningMatchers.hasText(containsString("10.4.0.0/16"))),
+            allOf(
+                hasComment("Cannot remove non-existent static route nexthop"),
+                ParseWarningMatchers.hasText(containsString("nexthop gateway address 10.5.0.1")))));
   }
 
   @Test
@@ -966,9 +999,9 @@ public class CheckPointGatewayGrammarTest {
     Configuration c5 = configs.get("gw_package_selection_5");
     assertThat(c1.getIpSpaces(), hasKey("n1"));
     assertThat(c2.getIpSpaces(), hasKey("n2"));
-    assertThat(c3.getIpSpaces(), anEmptyMap());
-    assertThat(c4.getIpSpaces(), anEmptyMap());
-    assertThat(c5.getIpSpaces(), anEmptyMap());
+    assertThat(c3.getIpSpaces(), allOf(not(hasKey("n1")), not(hasKey("n2"))));
+    assertThat(c4.getIpSpaces(), allOf(not(hasKey("n1")), not(hasKey("n2"))));
+    assertThat(c5.getIpSpaces(), allOf(not(hasKey("n1")), not(hasKey("n2"))));
   }
 
   @Test
@@ -1012,6 +1045,40 @@ public class CheckPointGatewayGrammarTest {
     Configuration c1 = configs.get("gw_package_selection_1");
     // Network object from domain should make it to VI model
     assertThat(c1.getIpSpaces(), hasKey("networkObject"));
+  }
+
+  @Test
+  public void testConvertGatewaysAndServers() throws IOException {
+    ImmutableMap<Uid, GatewayOrServer> gateways =
+        ImmutableMap.of(
+            Uid.of("1"),
+            new SimpleGateway(
+                Ip.parse("1.0.0.1"),
+                "g1",
+                ImmutableList.of(),
+                new GatewayOrServerPolicy("p1", null),
+                Uid.of("1")));
+    ImmutableMap<Uid, ManagementPackage> packages =
+        ImmutableMap.of(
+            Uid.of("2"),
+            new ManagementPackage(
+                ImmutableList.of(),
+                null,
+                new Package(
+                    new Domain("d", Uid.of("0")),
+                    AllInstallationTargets.instance(),
+                    "p1",
+                    false,
+                    true,
+                    Uid.of("2"))));
+
+    CheckpointManagementConfiguration mgmt =
+        toCheckpointMgmtConfig(gateways, packages, ImmutableList.of());
+
+    Map<String, Configuration> configs = parseTextConfigs(mgmt, "gw_package_selection_1");
+    Configuration c1 = configs.get("gw_package_selection_1");
+    // Simple-gateway object from show-gateways-and-servers should make it to VI model
+    assertThat(c1.getIpSpaces(), hasKey("g1"));
   }
 
   @Test
