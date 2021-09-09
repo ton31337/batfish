@@ -4,32 +4,34 @@ import static org.batfish.datamodel.transformation.Transformation.when;
 import static org.batfish.datamodel.transformation.TransformationStep.assignSourceIp;
 import static org.batfish.datamodel.transformation.TransformationStep.assignSourcePort;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.appliesToGateway;
-import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toHeaderSpace;
+import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toMatchExpr;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 import javax.annotation.Nonnull;
 import org.batfish.common.Warnings;
-import org.batfish.datamodel.HeaderSpace;
 import org.batfish.datamodel.Ip;
-import org.batfish.datamodel.acl.MatchHeaderSpace;
+import org.batfish.datamodel.acl.AclLineMatchExpr;
 import org.batfish.datamodel.transformation.Transformation;
 import org.batfish.datamodel.transformation.TransformationStep;
 import org.batfish.vendor.check_point_management.GatewayOrServer;
 import org.batfish.vendor.check_point_management.Host;
 import org.batfish.vendor.check_point_management.Machine;
 import org.batfish.vendor.check_point_management.MachineVisitor;
+import org.batfish.vendor.check_point_management.NamedManagementObject;
 import org.batfish.vendor.check_point_management.NatRule;
 import org.batfish.vendor.check_point_management.NatRuleOrSectionVisitor;
 import org.batfish.vendor.check_point_management.NatRulebase;
 import org.batfish.vendor.check_point_management.NatSection;
 import org.batfish.vendor.check_point_management.Original;
-import org.batfish.vendor.check_point_management.TypedManagementObject;
+import org.batfish.vendor.check_point_management.ServiceToMatchExpr;
+import org.batfish.vendor.check_point_management.Uid;
 
 public class CheckpointNatConversions {
 
@@ -72,9 +74,9 @@ public class CheckpointNatConversions {
    * manual HIDE NAT rule.
    */
   static @Nonnull Optional<List<TransformationStep>> manualHideTransformationSteps(
-      TypedManagementObject src,
-      TypedManagementObject dst,
-      TypedManagementObject service,
+      NamedManagementObject src,
+      NamedManagementObject dst,
+      NamedManagementObject service,
       Warnings warnings) {
     ImmutableList.Builder<TransformationStep> steps = ImmutableList.builder();
     if (!checkValidManualHide(src, dst, service, warnings)) {
@@ -91,9 +93,9 @@ public class CheckpointNatConversions {
    */
   @VisibleForTesting
   static boolean checkValidManualHide(
-      TypedManagementObject src,
-      TypedManagementObject dst,
-      TypedManagementObject service,
+      NamedManagementObject src,
+      NamedManagementObject dst,
+      NamedManagementObject service,
       Warnings warnings) {
     boolean valid = true;
     if (!(src instanceof Machine)) {
@@ -158,26 +160,27 @@ public class CheckpointNatConversions {
    * fields.
    */
   static @Nonnull Optional<Transformation> manualHideRuleTransformation(
-      NatRulebase natRulebase,
       org.batfish.vendor.check_point_management.NatRule natRule,
+      ServiceToMatchExpr serviceToMatchExpr,
+      Map<Uid, ? extends NamedManagementObject> objects,
       Warnings warnings) {
-    Optional<HeaderSpace> maybeOriginalHeaderSpace =
-        toHeaderSpace(
-            natRulebase.getObjectsDictionary().get(natRule.getOriginalSource()),
-            natRulebase.getObjectsDictionary().get(natRule.getOriginalDestination()),
-            natRulebase.getObjectsDictionary().get(natRule.getOriginalService()),
+    Optional<AclLineMatchExpr> maybeOrigMatchExpr =
+        toMatchExpr(
+            objects.get(natRule.getOriginalSource()),
+            objects.get(natRule.getOriginalDestination()),
+            objects.get(natRule.getOriginalService()),
+            serviceToMatchExpr,
             warnings);
     Optional<List<TransformationStep>> maybeSteps =
         manualHideTransformationSteps(
-            natRulebase.getObjectsDictionary().get(natRule.getTranslatedSource()),
-            natRulebase.getObjectsDictionary().get(natRule.getTranslatedDestination()),
-            natRulebase.getObjectsDictionary().get(natRule.getTranslatedService()),
+            objects.get(natRule.getTranslatedSource()),
+            objects.get(natRule.getTranslatedDestination()),
+            objects.get(natRule.getTranslatedService()),
             warnings);
-    if (!maybeOriginalHeaderSpace.isPresent() || !maybeSteps.isPresent()) {
+    if (!maybeOrigMatchExpr.isPresent() || !maybeSteps.isPresent()) {
       return Optional.empty();
     }
-    return Optional.of(
-        when(new MatchHeaderSpace(maybeOriginalHeaderSpace.get())).apply(maybeSteps.get()).build());
+    return Optional.of(when(maybeOrigMatchExpr.get()).apply(maybeSteps.get()).build());
   }
 
   static @Nonnull Optional<Transformation> mergeTransformations(
