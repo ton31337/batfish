@@ -118,17 +118,19 @@ public class CheckpointManagementParser {
     }
     long numUids = natRulebases.stream().map(NatRulebase::getUid).distinct().count();
     Uid uid = natRulebases.iterator().next().getUid();
-    warnCheckpointPackageFile(
-        serverName,
-        domainName,
-        packageName,
-        RELPATH_CHECKPOINT_SHOW_NAT_RULEBASE,
-        String.format(
-            "JSON file should contain one or more pages for exactly one NAT rulebase, but contains"
-                + " %s. Only reading pages for the first, with UID '%s'.",
-            numUids, uid.getValue()),
-        pvcae,
-        null);
+    if (numUids > 1) {
+      warnCheckpointPackageFile(
+          serverName,
+          domainName,
+          packageName,
+          RELPATH_CHECKPOINT_SHOW_NAT_RULEBASE,
+          String.format(
+              "JSON file should contain one or more pages for exactly one NAT rulebase, but"
+                  + " contains %s. Only reading pages for the first, with UID '%s'.",
+              numUids, uid.getValue()),
+          pvcae,
+          null);
+    }
     return mergeNatRulebasePages(
         natRulebases.stream()
             .filter(rulebase -> rulebase.getUid().equals(uid))
@@ -185,12 +187,20 @@ public class CheckpointManagementParser {
             .collect(ImmutableList.toImmutableList());
   }
 
-  private static List<TypedManagementObject> buildObjectsList(
+  @VisibleForTesting
+  static List<TypedManagementObject> buildObjectsList(
       Map<String, Map<String, Map<String, String>>> domainFileMap,
       String domainName,
       String serverName,
       ParseVendorConfigurationAnswerElement pvcae) {
-    return ImmutableList.of(RELPATH_CHECKPOINT_SHOW_NETWORKS).stream()
+    return ImmutableList.of(
+            RELPATH_CHECKPOINT_SHOW_NETWORKS,
+            RELPATH_CHECKPOINT_SHOW_SERVICE_GROUPS,
+            RELPATH_CHECKPOINT_SHOW_SERVICES_ICMP,
+            RELPATH_CHECKPOINT_SHOW_SERVICES_OTHER,
+            RELPATH_CHECKPOINT_SHOW_SERVICES_TCP,
+            RELPATH_CHECKPOINT_SHOW_SERVICES_UDP)
+        .stream()
         .flatMap(f -> readObjects(f, domainFileMap, domainName, serverName, pvcae).stream())
         .filter(Objects::nonNull)
         .collect(ImmutableList.toImmutableList());
@@ -488,4 +498,19 @@ public class CheckpointManagementParser {
   }
 
   private static final Logger LOGGER = LogManager.getLogger(CheckpointManagementParser.class);
+
+  @VisibleForTesting
+  static final String RELPATH_CHECKPOINT_SHOW_SERVICE_GROUPS = "show-service-groups.json";
+
+  @VisibleForTesting
+  static final String RELPATH_CHECKPOINT_SHOW_SERVICES_ICMP = "show-services-icmp.json";
+
+  @VisibleForTesting
+  static final String RELPATH_CHECKPOINT_SHOW_SERVICES_OTHER = "show-services-other.json";
+
+  @VisibleForTesting
+  static final String RELPATH_CHECKPOINT_SHOW_SERVICES_TCP = "show-services-tcp.json";
+
+  @VisibleForTesting
+  static final String RELPATH_CHECKPOINT_SHOW_SERVICES_UDP = "show-services-udp.json";
 }
