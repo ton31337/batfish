@@ -1,15 +1,16 @@
 package org.batfish.vendor.check_point_gateway.representation;
 
-import static org.batfish.datamodel.applications.PortsApplication.MAX_PORT_NUMBER;
+import static org.batfish.common.matchers.WarningMatchers.hasText;
+import static org.batfish.common.matchers.WarningsMatchers.hasRedFlags;
 import static org.batfish.datamodel.matchers.IpAccessListMatchers.accepts;
 import static org.batfish.datamodel.matchers.IpAccessListMatchers.rejects;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.aclName;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.checkValidHeaderSpaceInputs;
-import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.portRangeStringToIntegerSpace;
-import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.portStringToIntegerSpace;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toAction;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toIpAccessLists;
+import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toIpSpace;
 import static org.batfish.vendor.check_point_gateway.representation.CheckPointGatewayConversions.toMatchExpr;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertFalse;
@@ -21,6 +22,7 @@ import com.google.common.collect.ImmutableMap;
 import java.util.Map;
 import java.util.Optional;
 import org.batfish.common.Warnings;
+import org.batfish.datamodel.AclIpSpace;
 import org.batfish.datamodel.BddTestbed;
 import org.batfish.datamodel.Flow;
 import org.batfish.datamodel.HeaderSpace;
@@ -35,8 +37,7 @@ import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.SubRange;
 import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.acl.AclLineMatchExpr;
-import org.batfish.datamodel.acl.MatchHeaderSpace;
-import org.batfish.datamodel.acl.NotMatchExpr;
+import org.batfish.datamodel.acl.AclLineMatchExprs;
 import org.batfish.vendor.check_point_management.AccessLayer;
 import org.batfish.vendor.check_point_management.AccessRule;
 import org.batfish.vendor.check_point_management.AccessRuleOrSection;
@@ -192,7 +193,7 @@ public final class CheckPointGatewayConversionsTest {
         new AccessLayer(TEST_OBJS, rulebase, Uid.of("uidLayer"), "accessLayerName");
 
     Map<String, IpAccessList> ipAccessLists =
-        toIpAccessLists(accessLayer, TEST_OBJS, _serviceToMatchExpr);
+        toIpAccessLists(accessLayer, TEST_OBJS, _serviceToMatchExpr, new Warnings());
     assertThat(
         ipAccessLists.keySet(), containsInAnyOrder(aclName(accessLayer), aclName(accessSection)));
 
@@ -211,31 +212,34 @@ public final class CheckPointGatewayConversionsTest {
 
   @Test
   public void testAccessRuleToMatchExpr() {
+    Warnings w = new Warnings();
     AclLineMatchExpr matchNet0 =
-        new MatchHeaderSpace(HeaderSpace.builder().setDstIps(new IpSpaceReference("net0")).build());
+        AclLineMatchExprs.match(
+            HeaderSpace.builder().setDstIps(new IpSpaceReference("net0")).build());
     AclLineMatchExpr matchNotNet0 =
-        new MatchHeaderSpace(
+        AclLineMatchExprs.match(
             HeaderSpace.builder().setNotDstIps(new IpSpaceReference("net0")).build());
     AclLineMatchExpr matchNet1 =
-        new MatchHeaderSpace(HeaderSpace.builder().setSrcIps(new IpSpaceReference("net1")).build());
+        AclLineMatchExprs.match(
+            HeaderSpace.builder().setSrcIps(new IpSpaceReference("net1")).build());
     AclLineMatchExpr matchNotNet1 =
-        new MatchHeaderSpace(
+        AclLineMatchExprs.match(
             HeaderSpace.builder().setNotSrcIps(new IpSpaceReference("net1")).build());
     AclLineMatchExpr matchSvc =
-        new MatchHeaderSpace(
+        AclLineMatchExprs.match(
             HeaderSpace.builder()
                 .setIpProtocols(IpProtocol.TCP)
                 .setDstPorts(IntegerSpace.of(22).getSubRanges())
                 .build());
     AclLineMatchExpr matchUdpSvc =
-        new MatchHeaderSpace(
+        AclLineMatchExprs.match(
             HeaderSpace.builder()
                 .setIpProtocols(IpProtocol.UDP)
                 .setDstPorts(IntegerSpace.of(222).getSubRanges())
                 .build());
     AclLineMatchExpr matchNotSvc =
-        new NotMatchExpr(
-            new MatchHeaderSpace(
+        AclLineMatchExprs.not(
+            AclLineMatchExprs.match(
                 HeaderSpace.builder()
                     .setIpProtocols(IpProtocol.TCP)
                     .setDstPorts(IntegerSpace.of(22).getSubRanges())
@@ -254,7 +258,8 @@ public final class CheckPointGatewayConversionsTest {
                 .setUid(Uid.of("2"))
                 .build(),
             TEST_OBJS,
-            _serviceToMatchExpr);
+            _serviceToMatchExpr,
+            w);
     assertThat(
         _tb.toBDD(matches),
         equalTo(_tb.toBDD(matchNet0).and(_tb.toBDD(matchNet1).and(_tb.toBDD(matchSvc)))));
@@ -275,7 +280,8 @@ public final class CheckPointGatewayConversionsTest {
                 .setUid(Uid.of("2"))
                 .build(),
             TEST_OBJS,
-            _serviceToMatchExpr);
+            _serviceToMatchExpr,
+            w);
     assertThat(
         _tb.toBDD(negatedMatches),
         equalTo(_tb.toBDD(matchNotNet0).and(_tb.toBDD(matchNotNet1).and(_tb.toBDD(matchNotSvc)))));
@@ -293,18 +299,69 @@ public final class CheckPointGatewayConversionsTest {
                 .setUid(Uid.of("2"))
                 .build(),
             TEST_OBJS,
-            _serviceToMatchExpr);
+            _serviceToMatchExpr,
+            w);
     assertThat(_tb.toBDD(mutliSvc), equalTo(_tb.toBDD(matchSvc).or(_tb.toBDD(matchUdpSvc))));
   }
 
   @Test
+  public void testToIpSpace() {
+    Warnings w = new Warnings(false, true, false);
+    assertThat(
+        toIpSpace(
+            ImmutableList.of(Uid.of("1"), Uid.of("2"), Uid.of("3")),
+            ImmutableMap.of(
+                Uid.of("2"),
+                new ServiceTcp("tcp", "22", Uid.of("2")),
+                Uid.of("3"),
+                new CpmiAnyObject(Uid.of("1"))),
+            w),
+        equalTo(
+            AclIpSpace.union(
+                new IpSpaceReference("non-existent-1"),
+                new IpSpaceReference("unsupported-ServiceTcp-2"),
+                UniverseIpSpace.INSTANCE)));
+
+    assertThat(
+        w,
+        hasRedFlags(
+            contains(
+                hasText("Cannot convert non-existent object (Uid '1') to IpSpace, ignoring"),
+                hasText(
+                    "Cannot convert object 'tcp' (Uid '2') of type 'ServiceTcp' to IpSpace,"
+                        + " ignoring"))));
+  }
+
+  @Test
   public void testToAction() {
+    Warnings w = new Warnings(false, true, false);
     assertThat(
-        toAction(new RulebaseAction("Accept", Uid.of("1"), "Accept")), equalTo(LineAction.PERMIT));
-    assertThat(toAction(new RulebaseAction("Drop", Uid.of("1"), "Drop")), equalTo(LineAction.DENY));
+        toAction(new RulebaseAction("Accept", Uid.of("1"), "Accept"), Uid.of("1"), w),
+        equalTo(LineAction.PERMIT));
     assertThat(
-        toAction(new RulebaseAction("Unknown", Uid.of("1"), "Unknown")), equalTo(LineAction.DENY));
-    assertThat(toAction(null), equalTo(LineAction.DENY));
+        toAction(new RulebaseAction("Drop", Uid.of("2"), "Drop"), Uid.of("2"), w),
+        equalTo(LineAction.DENY));
+    assertThat(
+        toAction(new RulebaseAction("Unknown", Uid.of("3"), "Unknown"), Uid.of("3"), w),
+        equalTo(LineAction.DENY));
+    assertThat(toAction(null, Uid.of("4"), w), equalTo(LineAction.DENY));
+    assertThat(
+        toAction(new ServiceTcp("tcp", "22", Uid.of("5")), Uid.of("5"), w),
+        equalTo(LineAction.DENY));
+
+    assertThat(
+        w,
+        hasRedFlags(
+            contains(
+                hasText(
+                    "Cannot convert action 'Unknown' (Uid '3') into an access-rule action,"
+                        + " defaulting to deny action"),
+                hasText(
+                    "Cannot convert non-existent object (Uid '4') into an access-rule action,"
+                        + " defaulting to deny action"),
+                hasText(
+                    "Cannot convert object 'tcp' (Uid '5') of type ServiceTcp into an access-rule"
+                        + " action, defaulting to deny action"))));
   }
 
   @Test
@@ -324,7 +381,7 @@ public final class CheckPointGatewayConversionsTest {
                   .get()),
           equalTo(
               _tb.toBDD(
-                  new MatchHeaderSpace(
+                  AclLineMatchExprs.match(
                       HeaderSpace.builder()
                           .setSrcIps(new IpSpaceReference(NETWORK_0.getName()))
                           .setDstIps(new IpSpaceReference(NETWORK_1.getName()))
@@ -336,7 +393,7 @@ public final class CheckPointGatewayConversionsTest {
     {
       assertThat(
           _tb.toBDD(toMatchExpr(CPMI_ANY, CPMI_ANY, CPMI_ANY, _serviceToMatchExpr, warnings).get()),
-          equalTo(_tb.toBDD(new MatchHeaderSpace(HeaderSpace.builder().build()))));
+          equalTo(_tb.toBDD(AclLineMatchExprs.match(HeaderSpace.builder().build()))));
     }
     {
       assertThat(
@@ -344,7 +401,7 @@ public final class CheckPointGatewayConversionsTest {
               toMatchExpr(CPMI_ANY, CPMI_ANY, SERVICE_UDP, _serviceToMatchExpr, warnings).get()),
           equalTo(
               _tb.toBDD(
-                  new MatchHeaderSpace(
+                  AclLineMatchExprs.match(
                       HeaderSpace.builder()
                           .setDstPorts(ImmutableList.of(new SubRange(1234)))
                           .setIpProtocols(IpProtocol.UDP)
@@ -356,7 +413,7 @@ public final class CheckPointGatewayConversionsTest {
               toMatchExpr(CPMI_ANY, CPMI_ANY, SERVICE_ICMP, _serviceToMatchExpr, warnings).get()),
           equalTo(
               _tb.toBDD(
-                  new MatchHeaderSpace(
+                  AclLineMatchExprs.match(
                       HeaderSpace.builder()
                           .setIcmpTypes(8)
                           .setIcmpCodes(3)
@@ -370,7 +427,7 @@ public final class CheckPointGatewayConversionsTest {
                   .get()),
           equalTo(
               _tb.toBDD(
-                  new MatchHeaderSpace(
+                  AclLineMatchExprs.match(
                       HeaderSpace.builder()
                           .setIcmpTypes(8)
                           .setIpProtocols(IpProtocol.ICMP)
@@ -389,74 +446,5 @@ public final class CheckPointGatewayConversionsTest {
     assertFalse(checkValidHeaderSpaceInputs(addressSpace, service, service, warnings));
     assertFalse(checkValidHeaderSpaceInputs(addressSpace, addressSpace, addressSpace, warnings));
     assertTrue(checkValidHeaderSpaceInputs(addressSpace, addressSpace, service, warnings));
-  }
-
-  @Test
-  public void testPortRangeStringToIntegerSpace() {
-    // Empty string
-    assertThat(portRangeStringToIntegerSpace(""), equalTo(IntegerSpace.EMPTY));
-
-    // Single number
-    assertThat(portRangeStringToIntegerSpace("1"), equalTo(IntegerSpace.of(1)));
-    assertThat(portRangeStringToIntegerSpace("100000"), equalTo(IntegerSpace.EMPTY));
-
-    // Range of two numbers
-    assertThat(portRangeStringToIntegerSpace("1-5"), equalTo(IntegerSpace.of(new SubRange(1, 5))));
-    assertThat(
-        portRangeStringToIntegerSpace("1-100000"),
-        equalTo(IntegerSpace.of(new SubRange(1, MAX_PORT_NUMBER))));
-
-    // <=
-    assertThat(portRangeStringToIntegerSpace("<=5"), equalTo(IntegerSpace.of(new SubRange(0, 5))));
-    assertThat(portRangeStringToIntegerSpace("<=0"), equalTo(IntegerSpace.of(0)));
-    assertThat(
-        portRangeStringToIntegerSpace("<=100000"),
-        equalTo(IntegerSpace.of(new SubRange(0, MAX_PORT_NUMBER))));
-
-    // <
-    assertThat(portRangeStringToIntegerSpace("<5"), equalTo(IntegerSpace.of(new SubRange(0, 4))));
-    assertThat(portRangeStringToIntegerSpace("<0"), equalTo(IntegerSpace.EMPTY));
-    assertThat(
-        portRangeStringToIntegerSpace("<100000"),
-        equalTo(IntegerSpace.of(new SubRange(0, MAX_PORT_NUMBER))));
-
-    // >=
-    assertThat(
-        portRangeStringToIntegerSpace(">=5"),
-        equalTo(IntegerSpace.of(new SubRange(5, MAX_PORT_NUMBER))));
-    assertThat(
-        portRangeStringToIntegerSpace(">=0"),
-        equalTo(IntegerSpace.of(new SubRange(0, MAX_PORT_NUMBER))));
-    assertThat(portRangeStringToIntegerSpace(">=100000"), equalTo(IntegerSpace.EMPTY));
-
-    // >
-    assertThat(
-        portRangeStringToIntegerSpace(">5"),
-        equalTo(IntegerSpace.of(new SubRange(6, MAX_PORT_NUMBER))));
-    assertThat(
-        portRangeStringToIntegerSpace(">0"),
-        equalTo(IntegerSpace.of(new SubRange(1, MAX_PORT_NUMBER))));
-    assertThat(portRangeStringToIntegerSpace(">100000"), equalTo(IntegerSpace.EMPTY));
-  }
-
-  @Test
-  public void testPortStringToIntegerSpace() {
-    assertThat(portStringToIntegerSpace(""), equalTo(IntegerSpace.EMPTY));
-    assertThat(portStringToIntegerSpace(","), equalTo(IntegerSpace.EMPTY));
-    assertThat(portStringToIntegerSpace("50"), equalTo(IntegerSpace.of(50)));
-    assertThat(
-        portStringToIntegerSpace("50,>65000"),
-        equalTo(
-            IntegerSpace.builder()
-                .including(50)
-                .including(new SubRange(65001, MAX_PORT_NUMBER))
-                .build()));
-    assertThat(
-        portStringToIntegerSpace(" 50 , >65000 "),
-        equalTo(
-            IntegerSpace.builder()
-                .including(50)
-                .including(new SubRange(65001, MAX_PORT_NUMBER))
-                .build()));
   }
 }
