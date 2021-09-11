@@ -5,6 +5,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -13,7 +14,6 @@ import org.batfish.datamodel.AclAclLine;
 import org.batfish.datamodel.AclIpSpace;
 import org.batfish.datamodel.AclLine;
 import org.batfish.datamodel.ExprAclLine;
-import org.batfish.datamodel.HeaderSpace;
 import org.batfish.datamodel.IpAccessList;
 import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.IpSpaceReference;
@@ -21,6 +21,7 @@ import org.batfish.datamodel.LineAction;
 import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.acl.AclLineMatchExpr;
 import org.batfish.datamodel.acl.AclLineMatchExprs;
+import org.batfish.datamodel.acl.FalseExpr;
 import org.batfish.vendor.check_point_management.AccessLayer;
 import org.batfish.vendor.check_point_management.AccessRule;
 import org.batfish.vendor.check_point_management.AccessRuleOrSection;
@@ -177,24 +178,17 @@ public final class CheckPointGatewayConversions {
     ImmutableList.Builder<AclLineMatchExpr> conjuncts = ImmutableList.builder();
 
     // Source
-    IpSpace srcRefs = toIpSpace(rule.getSource(), objs, w);
-    AclLineMatchExpr srcMatch =
-        rule.getSourceNegate()
-            ? AclLineMatchExprs.match(HeaderSpace.builder().setNotSrcIps(srcRefs).build())
-            : AclLineMatchExprs.match(HeaderSpace.builder().setSrcIps(srcRefs).build());
-    conjuncts.add(srcMatch);
+    AclLineMatchExpr srcMatch = AclLineMatchExprs.matchSrc(toIpSpace(rule.getSource(), objs, w));
+    conjuncts.add(rule.getSourceNegate() ? AclLineMatchExprs.not(srcMatch) : srcMatch);
 
     // Dest
-    IpSpace dstRefs = toIpSpace(rule.getDestination(), objs, w);
     AclLineMatchExpr dstMatch =
-        rule.getDestinationNegate()
-            ? AclLineMatchExprs.match(HeaderSpace.builder().setNotDstIps(dstRefs).build())
-            : AclLineMatchExprs.match(HeaderSpace.builder().setDstIps(dstRefs).build());
-    conjuncts.add(dstMatch);
+        AclLineMatchExprs.matchDst(toIpSpace(rule.getDestination(), objs, w));
+    conjuncts.add(rule.getDestinationNegate() ? AclLineMatchExprs.not(dstMatch) : dstMatch);
 
     // Service
-    conjuncts.add(
-        servicesToMatchExpr(rule.getService(), rule.getServiceNegate(), objs, serviceToMatchExpr));
+    AclLineMatchExpr svcMatch = servicesToMatchExpr(rule.getService(), objs, serviceToMatchExpr, w);
+    conjuncts.add(rule.getServiceNegate() ? AclLineMatchExprs.not(svcMatch) : svcMatch);
 
     return AclLineMatchExprs.and(conjuncts.build());
   }
@@ -203,21 +197,30 @@ public final class CheckPointGatewayConversions {
    * Returns an {@link AclLineMatchExpr} matching the specified {@link Service} {@link Uid}s.
    * Ignores {@link Uid}s for undefined or non-{@link Service} objects.
    */
+  @VisibleForTesting
   @Nonnull
-  private static AclLineMatchExpr servicesToMatchExpr(
+  static AclLineMatchExpr servicesToMatchExpr(
       List<Uid> services,
-      boolean negate,
       Map<Uid, NamedManagementObject> objs,
-      ServiceToMatchExpr serviceToMatchExpr) {
-    AclLineMatchExpr matchExpr =
-        AclLineMatchExprs.or(
-            services.stream()
-                .map(objs::get)
-                .filter(Service.class::isInstance) // TODO warn about bad refs
-                .map(Service.class::cast)
-                .map(s -> s.accept(serviceToMatchExpr))
-                .collect(ImmutableList.toImmutableList()));
-    return negate ? AclLineMatchExprs.not(matchExpr) : matchExpr;
+      ServiceToMatchExpr serviceToMatchExpr,
+      Warnings w) {
+    return AclLineMatchExprs.or(
+        services.stream()
+            .map(objs::get)
+            .map(
+                o -> {
+                  if (!(o instanceof Service)) {
+                    w.redFlag(
+                        String.format(
+                            "Cannot convert %s (type %s) to a service match expression,"
+                                + " making unmatchable.",
+                            o.getName(), o.getClass().getSimpleName()));
+                    return FalseExpr.INSTANCE;
+                  }
+                  return serviceToMatchExpr.visit((Service) o);
+                })
+            .filter(Objects::nonNull)
+            .collect(ImmutableList.toImmutableList()));
   }
 
   /** Convert specified {@link TypedManagementObject} to a {@link LineAction}. */
@@ -313,12 +316,17 @@ public final class CheckPointGatewayConversions {
 
   /** Returns the name we use for IpAccessList of AccessLayer */
   public static String aclName(AccessLayer accessLayer) {
-    return accessLayer.getUid().getValue();
+    return String.format("%s (%s)", accessLayer.getUid().getValue(), accessLayer.getName());
   }
 
   /** Returns the name we use for IpAccessList of AccessSection */
   public static String aclName(AccessSection accessSection) {
-    return accessSection.getUid().getValue();
+    String uid = accessSection.getUid().getValue();
+    // Using a generated name, so just use Uid as the name
+    if (accessSection.getName().equals(AccessSection.generateName(accessSection.getUid()))) {
+      return uid;
+    }
+    return String.format("%s (%s)", uid, accessSection.getName());
   }
 
   private CheckPointGatewayConversions() {}
