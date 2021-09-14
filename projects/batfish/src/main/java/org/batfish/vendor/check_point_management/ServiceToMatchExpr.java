@@ -10,6 +10,7 @@ import static org.batfish.vendor.check_point_management.CheckPointManagementTrac
 import static org.batfish.vendor.check_point_management.CheckPointManagementTraceElementCreators.serviceUdpTraceElement;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Strings;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
