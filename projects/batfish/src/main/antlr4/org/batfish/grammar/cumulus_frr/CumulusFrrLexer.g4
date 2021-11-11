@@ -302,6 +302,8 @@ LINE: 'line';
 
 MAXIMUM_PATHS: 'maximum-paths';
 
+MAXIMUM_PATHS_IBGP: 'maximum-paths ibgp';
+
 MAX_MED: 'max-med';
 
 MAX_METRIC: 'max-metric';

@@ -137,6 +137,7 @@ sbafi_inner
 // Skeptical that max-paths belongs here.
 // Adding for now to prevent jumping out of parser context.
 | sbafi_maximum_paths
+| sbafi_maximum_paths_ibgp
 | sbafi_network
 | sbafi_neighbor
 | sbafi_no
@@ -152,7 +153,13 @@ sbaf_ipv6_unicast
 sbafi6_inner
 :
   sbafi6_import
+| sbafi6_maximum_paths_ibgp
 | sbafi6_null_tail
+;
+
+sbafi6_maximum_paths_ibgp
+:
+  MAXIMUM_PATHS_IBGP num = uint32 NEWLINE
 ;
 
 sbafi6_import
@@ -230,6 +237,11 @@ sbafi_import
 sbafi_maximum_paths
 :
   MAXIMUM_PATHS num = uint32 NEWLINE
+;
+
+sbafi_maximum_paths_ibgp
+:
+  MAXIMUM_PATHS_IBGP num = uint32 NEWLINE
 ;
 
 sbafi_network
